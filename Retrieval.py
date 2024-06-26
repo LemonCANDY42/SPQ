@@ -1,5 +1,7 @@
 from utils import *
 from tqdm import tqdm
+from torchvision.transforms import InterpolationMode
+
 
 def pqDist_one(C, N_books, g_x, q_x):
     l1, l2 = C.shape
@@ -13,8 +15,8 @@ def pqDist_one(C, N_books, g_x, q_x):
 
     for j in range(N_books):
         for k in range(l1):
-            D_C_split[j][k] =T.norm(q_x_split[j]-C_split[j][k], 2)
-            #D_C_split[j][k] = T.norm(q_x_split[j]-C_split[j][k], 2).detach() #for PyTorch version over 1.9
+            # D_C_split[j][k] =T.norm(q_x_split[j]-C_split[j][k], 2)
+            D_C_split[j][k] = T.norm(q_x_split[j]-C_split[j][k], 2).detach() #for PyTorch version over 1.9
         if j == 0:
             dist = D_C_split[j][g_x_split[j]]
         else:
@@ -70,17 +72,24 @@ def Evaluate_mAP(C, N_books, gallery_codes, query_codes, gallery_labels, query_l
 
 def DoRetrieval(device, args, net, C):
     print("Do Retrieval!")
-
-    trainset = torchvision.datasets.CIFAR10(root=args.data_dir, train=True, download=args.if_download, transform=transforms.ToTensor())
+    tfs = transforms.Compose([
+        transforms.Resize(size=(args.input_size,args.input_size), interpolation=InterpolationMode.BILINEAR),
+        transforms.ToTensor(),
+    ])
+    # trainset = torchvision.datasets.CIFAR10(root=args.data_dir, train=True, download=args.if_download, transform=transforms.ToTensor())
+    trainset = torchvision.datasets.ImageFolder(args.data_dir, transform=tfs)
     Gallery_loader = T.utils.data.DataLoader(trainset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
 
-    testset = torchvision.datasets.CIFAR10(root=args.data_dir, train=False, download=args.if_download, transform=transforms.ToTensor())
+    # testset = torchvision.datasets.CIFAR10(root=args.data_dir, train=False, download=args.if_download, transform=transforms.ToTensor())
+    testset = torchvision.datasets.ImageFolder(args.data_dir, transform=tfs)
     Query_loader = T.utils.data.DataLoader(testset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
+
 
     net.eval()
     with T.no_grad():
         with tqdm(total=len(Gallery_loader), desc="Build Gallery", bar_format='{desc:<15}{percentage:3.0f}%|{bar:10}{r_bar}') as pbar:
             for i, data in enumerate(Gallery_loader, 0):
+                print(data)
                 gallery_x_batch, gallery_y_batch = data[0].to(device), data[1].to(device)
                 outputs = net(gallery_x_batch)
                 gallery_c_batch = Indexing(C, args.N_books, outputs[0])

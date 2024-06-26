@@ -1,7 +1,31 @@
+import torchvision.datasets
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from utils import *
 from Retrieval import *
+import os
+from torchvision.transforms import InterpolationMode
 
+class Quantization_Head(nn.Module):
+    def __init__(self, N_words, N_books, L_word, tau_q):
+        super(Quantization_Head, self).__init__()
+        self.fc = nn.Linear(512, N_books * L_word)
+        nn.init.xavier_uniform_(self.fc.weight)
+
+        # Codebooks
+        self.C = T.nn.Parameter(Variable((T.randn(N_words, N_books * L_word)).type(T.float32), requires_grad=True))
+        nn.init.xavier_uniform_(self.C)
+
+        self.N_books = N_books
+        self.L_word = L_word
+        self.tau_q = tau_q
+
+    def forward(self, input):
+        X = self.fc(input)
+        Z = Soft_Quantization(X, self.C, self.N_books, self.tau_q)
+        return X, Z
+
+# python main_SPQ.py --epoch 1000 --input_size 210 --batch_size 64 --data_dir F:\Jewelry --num_workers 4
+# python main_SPQ.py --epoch 1 --input_size 210 --batch_size 64 --data_dir /Volumes/Sandi/Jewelry --num_workers 0 --device cpu --eval_epoch 1
 def get_args_parser():
     parser = argparse.ArgumentParser('SPQ', add_help=False)
 
@@ -11,6 +35,7 @@ def get_args_parser():
     parser.add_argument('--batch_size', default=256, type=int, help="""Training mini-batch size.""")
     parser.add_argument('--num_workers', default=12, type=int, help="""Number of data loading workers per GPU.""")
     parser.add_argument('--input_size', default=32, type=int, help="""Input image size, default is set to CIFAR10.""")
+    parser.add_argument('--device', default='cuda', type=str,choices = ['mps', 'cpu', 'cuda'], help="""device.""")
 
     parser.add_argument('--N_books', default=8, type=int, help="""The number of the codebooks.""")
     parser.add_argument('--N_words', default=16, type=int, help="""The number of the codewords. It should be a power of two.""")
@@ -20,8 +45,9 @@ def get_args_parser():
     
     parser.add_argument('--num_cls', default="10", type=int, help="""The number of classes in the dataset for evaluation, default is set to CIFAR10""")
     parser.add_argument('--eval_epoch', default=100, type=int, help="""Compute mAP for Every N-th epoch.""")
+    parser.add_argument('--epoch', default=1000, type=int, help="""epochs.""")
     parser.add_argument('--output_dir', default=".", type=str, help="""Path to save logs and checkpoints.""")
-    parser.add_argument('--Top_N', default=1000, type=int, help="""Top N number of images to be retrieved for evaluation.""")
+    parser.add_argument('--Top_N', default=100, type=int, help="""Top N number of images to be retrieved for evaluation.""")
     
     return parser
 class CQCLoss(T.nn.Module):
@@ -73,9 +99,13 @@ class CQCLoss(T.nn.Module):
         return loss / (2 * self.batch_size)
 
 def train_SPQ(args):
-    os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu_id
-    device = T.device('cuda')
-
+    if args.device == 'cuda':
+        os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu_id
+        device = T.device('cuda')
+    else:
+        device = args.device
+        os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+        device = T.device(device)
     sz = args.input_size
     data_dir = args.data_dir
     batch_size = args.batch_size
@@ -86,45 +116,32 @@ def train_SPQ(args):
     tau_q = args.soft_quantization_scale
     tau_cqc = args.contrastive_temperature
 
+
     N_bits = int(N_books * np.sqrt(N_words))
     print('\033[91m' + '%d'%N_bits +  '-bit to retrieval' + '\033[0m')
 
     #Define the data augmentation following the setup of SimCLR
     Augmentation = nn.Sequential(
-        Kg.RandomResizedCrop(size=(sz, sz)),
+        # Kg.RandomResizedCrop(size=(sz, sz)),
         Kg.RandomHorizontalFlip(p=0.5),
         Kg.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.1, p=0.8),
         Kg.RandomGrayscale(p=0.2),
         Kg.RandomGaussianBlur((int(0.1 * sz), int(0.1 * sz)), (0.1, 2.0), p=0.5))
 
-    transform = transforms.ToTensor()
+    # transform = transforms.ToTensor()
+    tfs = transforms.Compose([
+        transforms.Resize(size=(args.input_size,args.input_size), interpolation=InterpolationMode.BILINEAR),
+        transforms.ToTensor(),
+    ])
 
-    trainset = torchvision.datasets.CIFAR10(root=data_dir, train=True, download=args.if_download, transform=transform)
+    # trainset = torchvision.datasets.CIFAR10(root=data_dir, train=True, download=args.if_download, transform=transform)
+    trainset = torchvision.datasets.ImageFolder(data_dir, transform=tfs)
     trainloader = T.utils.data.DataLoader(trainset, batch_size=batch_size, shuffle=True, drop_last=True, num_workers=args.num_workers)
-
-    class Quantization_Head(nn.Module):
-        def __init__(self, N_words, N_books, L_word, tau_q):
-            super(Quantization_Head, self).__init__()
-            self.fc = nn.Linear(512, N_books * L_word)
-            nn.init.xavier_uniform_(self.fc.weight)
-
-            # Codebooks
-            self.C = T.nn.Parameter(Variable((T.randn(N_words, N_books * L_word)).type(T.float32), requires_grad=True))
-            nn.init.xavier_uniform_(self.C)
-
-            self.N_books = N_books
-            self.L_word = L_word
-            self.tau_q = tau_q
-
-        def forward(self, input):
-            X = self.fc(input)
-            Z = Soft_Quantization(X, self.C, self.N_books, self.tau_q)
-            return X, Z
         
     Q = Quantization_Head(N_words, N_books, L_word, tau_q)
-    net = nn.Sequential(ResNet_Baseline(BasicBlock, [2, 2, 2, 2]), Q)
+    net = nn.Sequential(ResNet_Baseline(BasicBlock, [2, 2, 2, 2]), Q).to(device)
 
-    net.cuda(device)
+    # net.cuda(device)
 
     criterion = CQCLoss(device, batch_size, tau_cqc)
 
@@ -134,7 +151,7 @@ def train_SPQ(args):
     MAX_mAP = 0.0
     mAP = 0.0
 
-    for epoch in range(5000):  # loop over the dataset multiple times
+    for epoch in range(args.epoch):  # loop over the dataset multiple times
 
         print('Epoch: %d, Learning rate: %.4f' % (epoch, scheduler.get_last_lr()[0]))
         running_loss = 0.0
@@ -147,6 +164,7 @@ def train_SPQ(args):
             optimizer.zero_grad()
 
             Xa, Za = net(Ia)
+            print(Ia, Ia.shape, Xa, Za)
             Xb, Zb = net(Ib)
 
             loss = criterion(Xa, Xb, Za, Zb)
