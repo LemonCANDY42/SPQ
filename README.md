@@ -1,4 +1,4 @@
-## Self-supervised Product Quantization for Deep Unsupervised Image Retrieval
+# Self-supervised Product Quantization for Deep Unsupervised Image Retrieval (ICCV2021)
 Pytorch implementation of SPQ   
 Accepted to ICCV 2021 - <a href="https://openaccess.thecvf.com/content/ICCV2021/papers/Jang_Self-Supervised_Product_Quantization_for_Deep_Unsupervised_Image_Retrieval_ICCV_2021_paper.pdf">paper</a>
 
@@ -36,7 +36,7 @@ python main_SPQ.py --help
 ```
 
 ### Vanilla SPQ training
-- We utilize CIFAR-10 provided by torchvision in this work, and if not installed, please set the `--if_downlad=True`.
+- We utilize CIFAR-10 provided by torchvision in this work, and if not installed, please set the `--if_download=True`.
 - We will provied pretrained models in the near futurue.
 - To obtain the retrieval results reported in our paper, you need to train the model over 2,000 epochs with default setup. In order to train the model for 32-bit and compute mAP for every 100-th epoch, please run as:
 ```
